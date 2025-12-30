@@ -43,8 +43,8 @@ result = solve(f, [1.0, 2.0]; lb=-10.0, ub=10.0, max_evals=1000)
 ```
 """
 function solve(f::Function, x0::AbstractVector{<:Real};
-    lb::Union{Real,AbstractVector{<:Real}}=-Inf,
-    ub::Union{Real,AbstractVector{<:Real}}=Inf,
+    lb::Union{Real,AbstractVector{<:Real},Nothing}=nothing,
+    ub::Union{Real,AbstractVector{<:Real},Nothing}=nothing,
     max_evals::Int=10_000,
     max_iters::Int=10_000,
     method::Symbol=:OrthoMADS,
@@ -52,11 +52,17 @@ function solve(f::Function, x0::AbstractVector{<:Real};
     constraints::Vector=[],
     seed::Union{Nothing,Int}=nothing,
     min_mesh_size::Float64=eps(Float64) / 2,
+    f_target::Float64=-Inf,
     f_tol::Float64=0.0,
     x_tol::Float64=0.0,
     max_time::Float64=Inf,
     log_interval::Int=1,
     store_trace::Bool=false)
+
+    # Validate bounds are provided
+    if lb === nothing || ub === nothing
+        error("Bounds are required. Please provide both `lb` and `ub`.")
+    end
 
     n = length(x0)
     x0_vec = collect(Float64, x0)
@@ -64,16 +70,6 @@ function solve(f::Function, x0::AbstractVector{<:Real};
     # Process bounds
     lb_vec = lb isa Real ? fill(Float64(lb), n) : collect(Float64, lb)
     ub_vec = ub isa Real ? fill(Float64(ub), n) : collect(Float64, ub)
-
-    # Handle infinite bounds by using large finite values
-    for i in 1:n
-        if lb_vec[i] == -Inf
-            lb_vec[i] = -1e10
-        end
-        if ub_vec[i] == Inf
-            ub_vec[i] = 1e10
-        end
-    end
 
     # Validate bounds
     length(lb_vec) == n || throw(DimensionMismatch("lb must have length $n"))
@@ -96,6 +92,7 @@ function solve(f::Function, x0::AbstractVector{<:Real};
         max_evaluations=max_evals,
         max_time=max_time,
         min_mesh_size=min_mesh_size,
+        f_target=f_target,
         f_tol=f_tol,
         x_tol=x_tol,
         verbosity=verbosity,
@@ -132,6 +129,7 @@ function solve(p::Problem;
     verbosity::Verbosity=Silent,
     seed::Union{Nothing,Int}=nothing,
     min_mesh_size::Float64=eps(Float64) / 2,
+    f_target::Float64=-Inf,
     f_tol::Float64=0.0,
     x_tol::Float64=0.0,
     max_time::Float64=Inf,
@@ -148,6 +146,7 @@ function solve(p::Problem;
         constraints=p.constraints,
         seed=seed,
         min_mesh_size=min_mesh_size,
+        f_target=f_target,
         f_tol=f_tol,
         x_tol=x_tol,
         max_time=max_time,

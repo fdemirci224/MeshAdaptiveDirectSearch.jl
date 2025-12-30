@@ -15,8 +15,9 @@ not by Options.
 - `max_evaluations::Int = typemax(Int)`: Maximum function evaluations
 - `max_time::Float64 = Inf`: Maximum wall-clock time in seconds
 - `min_mesh_size::Float64 = eps(Float64)/2`: Stop when mesh size falls below this
-- `f_tol::Float64 = 0.0`: Stop if improvement in f(x) is below this threshold
-- `x_tol::Float64 = 0.0`: Stop if step size ||x_new - x_old|| is below this threshold
+- `f_target::Float64 = -Inf`: Stop when f(x) < f_target (target value reached)
+- `f_tol::Float64 = 0.0`: Stop if improvement in f(x) is below this threshold (after 5 consecutive stagnating iters)
+- `x_tol::Float64 = 0.0`: Stop if step size ||x_new - x_old|| is below this threshold (after 5 consecutive stagnating iters)
 
 # Output & Logging
 - `verbosity::Verbosity = Silent`: Logging verbosity level
@@ -32,6 +33,7 @@ Base.@kwdef struct Options
     max_evaluations::Int = typemax(Int)
     max_time::Float64 = Inf
     min_mesh_size::Float64 = eps(Float64) / 2
+    f_target::Float64 = -Inf
     f_tol::Float64 = 0.0
     x_tol::Float64 = 0.0
 

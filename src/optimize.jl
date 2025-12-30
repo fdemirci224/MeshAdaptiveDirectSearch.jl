@@ -2,9 +2,26 @@
 # Refactored minimize with Options integration and professional logging
 
 """
+    EvalCounter
+
+Wrapper to count function evaluations.
+"""
+mutable struct EvalCounter{F}
+    f::F
+    count::Int
+end
+
+EvalCounter(f) = EvalCounter(f, 0)
+
+function (ec::EvalCounter)(x)
+    ec.count += 1
+    return ec.f(x)
+end
+
+"""
     minimize(m::AbstractMADS, f, x0 = zeros(length(x0));
-             lowerbound = -ones(length(x0)),
-             upperbound = ones(length(x0)),
+             lowerbound = nothing,
+             upperbound = nothing,
              max_iterations = 10^4,
              min_mesh_size = eps(Float64)/2,
              verbosity = Silent,
@@ -25,8 +42,8 @@ Constraints can be defined by boolean functions, e.g.
 - `x0`: Initial point
 
 # Keyword Arguments
-- `lowerbound`: Lower bounds (scalar or vector)
-- `upperbound`: Upper bounds (scalar or vector)
+- `lowerbound`: Lower bounds (required - scalar or vector)
+- `upperbound`: Upper bounds (required - scalar or vector)
 - `max_iterations`: Maximum iterations (default: 10000)
 - `min_mesh_size`: Minimum mesh size for convergence (default: eps()/2)
 - `verbosity`: Logging level (Silent, Final, Iter, Step, Debug)
@@ -34,13 +51,18 @@ Constraints can be defined by boolean functions, e.g.
 - `options`: Options struct (overrides individual keyword arguments)
 """
 function minimize(m::AbstractMADS, f, x0=zeros(length(x0));
-    lowerbound=-ones(length(x0)),
-    upperbound=ones(length(x0)),
+    lowerbound=nothing,
+    upperbound=nothing,
     max_iterations=10^4,
     min_mesh_size=eps(Float64) / 2,
     verbosity=Silent,
     constraints=[],
     options::Union{Nothing,Options}=nothing)
+
+    # Validate bounds are provided
+    if lowerbound === nothing || upperbound === nothing
+        error("Bounds are required. Please provide both `lowerbound` and `upperbound`.")
+    end
 
     # If options provided, use those values
     if options !== nothing
@@ -63,13 +85,15 @@ function minimize(m::AbstractMADS, f, x0=zeros(length(x0));
 
     # Setup transformations
     to, from = standardtransformation(lowerbound, upperbound)
-    finternal = x -> f(to(x))
+
+    # Wrap function with evaluation counter
+    eval_counter = EvalCounter(x -> f(to(x)))
     cinternal = [x -> c(to(x)) for c in constraints]
 
     # Initialize
     incumbent = from(x0)
     init!(m.poll, incumbent)
-    fincumbent = finternal(incumbent)
+    fincumbent = eval_counter(incumbent)
 
     # Get method name for logging
     method_name = string(typeof(m).name.wrapper)
@@ -81,24 +105,37 @@ function minimize(m::AbstractMADS, f, x0=zeros(length(x0));
     # Additional stopping criteria from options
     max_evals = options !== nothing ? options.max_evaluations : typemax(Int)
     max_time = options !== nothing ? options.max_time : Inf
+    f_target = options !== nothing ? options.f_target : -Inf
     f_tol = options !== nothing ? options.f_tol : 0.0
     x_tol = options !== nothing ? options.x_tol : 0.0
 
     # Tracking
-    eval_count = 1  # Initial evaluation
     start_time = time()
     prev_incumbent = copy(incumbent)
     prev_fincumbent = fincumbent
 
+    # Stagnation tracking - require consecutive stagnation before stopping
+    stagnation_count = 0
+    min_stagnation_iters = 5  # Require 5 consecutive stagnating iterations
+
     # Main optimization loop
     for k in 1:max_iterations
+        # Check max_evals before doing more work
+        if eval_counter.count >= max_evals
+            elapsed_time = time() - start_time
+            result = (f=fincumbent, x=to(incumbent), stopping_reason=MaxEvaluations,
+                iterations=k - 1, evaluations=eval_counter.count, time=elapsed_time, trace=trace)
+            log_final!(logger, result)
+            return result
+        end
+
         # Search stage
-        search_result = search(m, finternal, cinternal, incumbent, fincumbent)
+        search_result = search(m, eval_counter, cinternal, incumbent, fincumbent)
         search_incumbent, search_fincumbent, search_improved = search_result.incumbent, search_result.fx, search_result.hasimproved
 
         # Poll stage (if search didn't find full success)
         if search_improved != 1
-            poll_result = poll(m, finternal, cinternal, incumbent, fincumbent)
+            poll_result = poll(m, eval_counter, cinternal, incumbent, fincumbent)
             incumbent, fincumbent, i = poll_result.incumbent, poll_result.fx, poll_result.hasimproved
         else
             incumbent, fincumbent, i = search_incumbent, search_fincumbent, search_improved
@@ -114,7 +151,7 @@ function minimize(m::AbstractMADS, f, x0=zeros(length(x0));
 
         # Logging
         current_Δ = Δ(m.mesh)
-        log_iteration!(logger, k, fincumbent, current_Δ, i)
+        log_iteration!(logger, k, fincumbent, current_Δ, i, eval_counter.count)
         log_step!(logger, k, i == search_improved ? :search : :poll, i,
             search_fincumbent, fincumbent, current_Δ)
 
@@ -122,7 +159,7 @@ function minimize(m::AbstractMADS, f, x0=zeros(length(x0));
         if should_log(logger, Debug)
             cache_size = m isa RobustMADS ? length(m.cache.y) : 0
             log_debug!(logger, k,
-                directions_count=length(m.poll) + 1,  # Approximate
+                directions_count=length(m.poll) + 1,
                 cache_size=cache_size,
                 mesh_level=ℓ(m.mesh))
         end
@@ -131,32 +168,55 @@ function minimize(m::AbstractMADS, f, x0=zeros(length(x0));
 
         # Min mesh size
         if current_Δ < min_mesh_size
+            elapsed_time = time() - start_time
             result = (f=fincumbent, x=to(incumbent), stopping_reason=MinMeshSize,
-                iterations=k, evaluations=eval_count, trace=trace)
+                iterations=k, evaluations=eval_counter.count, time=elapsed_time, trace=trace)
+            log_final!(logger, result)
+            return result
+        end
+
+        # F target reached
+        if fincumbent < f_target
+            elapsed_time = time() - start_time
+            result = (f=fincumbent, x=to(incumbent), stopping_reason=FTargetReached,
+                iterations=k, evaluations=eval_counter.count, time=elapsed_time, trace=trace)
+            log_final!(logger, result)
+            return result
+        end
+
+        # Max evaluations
+        if eval_counter.count >= max_evals
+            elapsed_time = time() - start_time
+            result = (f=fincumbent, x=to(incumbent), stopping_reason=MaxEvaluations,
+                iterations=k, evaluations=eval_counter.count, time=elapsed_time, trace=trace)
             log_final!(logger, result)
             return result
         end
 
         # Max time
         if time() - start_time > max_time
+            elapsed_time = time() - start_time
             result = (f=fincumbent, x=to(incumbent), stopping_reason=MaxTime,
-                iterations=k, evaluations=eval_count, trace=trace)
+                iterations=k, evaluations=eval_counter.count, time=elapsed_time, trace=trace)
             log_final!(logger, result)
             return result
         end
 
-        # F tolerance (stagnation)
-        if f_tol > 0 && abs(fincumbent - prev_fincumbent) < f_tol && i <= 0
-            result = (f=fincumbent, x=to(incumbent), stopping_reason=FTolReached,
-                iterations=k, evaluations=eval_count, trace=trace)
-            log_final!(logger, result)
-            return result
+        # F tolerance (stagnation) - require consecutive stagnation
+        f_stagnating = f_tol > 0 && abs(fincumbent - prev_fincumbent) < f_tol && i <= 0
+        x_stagnating = x_tol > 0 && norm(incumbent - prev_incumbent) < x_tol && i <= 0
+
+        if f_stagnating || x_stagnating
+            stagnation_count += 1
+        else
+            stagnation_count = 0
         end
 
-        # X tolerance
-        if x_tol > 0 && norm(incumbent - prev_incumbent) < x_tol && i <= 0
-            result = (f=fincumbent, x=to(incumbent), stopping_reason=XTolReached,
-                iterations=k, evaluations=eval_count, trace=trace)
+        if stagnation_count >= min_stagnation_iters
+            elapsed_time = time() - start_time
+            stopping_reason = f_stagnating ? FTolReached : XTolReached
+            result = (f=fincumbent, x=to(incumbent), stopping_reason=stopping_reason,
+                iterations=k, evaluations=eval_counter.count, time=elapsed_time, trace=trace)
             log_final!(logger, result)
             return result
         end
@@ -166,8 +226,9 @@ function minimize(m::AbstractMADS, f, x0=zeros(length(x0));
         prev_fincumbent = fincumbent
     end
 
+    elapsed_time = time() - start_time
     result = (f=fincumbent, x=to(incumbent), stopping_reason=MaxIterations,
-        iterations=max_iterations, evaluations=eval_count, trace=trace)
+        iterations=max_iterations, evaluations=eval_counter.count, time=elapsed_time, trace=trace)
     log_final!(logger, result)
     return result
 end

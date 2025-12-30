@@ -6,8 +6,8 @@
 
 Verbosity levels for MADS logging.
 - `Silent`: No output
-- `Final`: Print only termination summary (best f, x, stopping reason, iterations)
-- `Iter`: One line per iteration (iteration index, incumbent f, mesh size Δ, success flag)
+- `Final`: Print only termination summary (best f, x, stopping reason, iterations, evaluations, time)
+- `Iter`: One line per iteration (iteration index, incumbent f, mesh size Δ, success flag, eval count)
 - `Step`: Detailed stage-level info (search vs poll outcome, mesh update, success type)
 - `Debug`: Diagnostics per iteration (direction count, cache size) - NOT per evaluation
 """
@@ -18,7 +18,7 @@ Verbosity levels for MADS logging.
 
 Enum for optimization termination reasons.
 """
-@enum StoppingReason MaxIterations MinMeshSize MaxEvaluations MaxTime FTolReached XTolReached
+@enum StoppingReason MaxIterations MinMeshSize MaxEvaluations MaxTime FTolReached XTolReached FTargetReached
 
 """
     MADSLogger
@@ -38,17 +38,17 @@ MADSLogger(; verbosity::Verbosity=Silent, io::IO=stdout, log_interval::Int=1) =
 should_log(logger::MADSLogger, level::Verbosity) = Int(logger.verbosity) >= Int(level)
 
 """
-    log_iteration!(logger, k, fx, Δ, success)
+    log_iteration!(logger, k, fx, Δ, success, eval_count)
 
 Log iteration summary (Iter level and above).
 Only logs every `log_interval` iterations.
 """
-function log_iteration!(logger::MADSLogger, k::Int, fx::Float64, Δ::Float64, success::Int)
+function log_iteration!(logger::MADSLogger, k::Int, fx::Float64, Δ::Float64, success::Int, eval_count::Int)
     should_log(logger, Iter) || return
     k % logger.log_interval != 0 && return
 
     success_str = success > 0 ? "✓" : success == 0 ? "○" : "✗"
-    println(logger.io, "iter=$k  f=$(@sprintf("%.6e", fx))  Δ=$(@sprintf("%.2e", Δ))  [$success_str]")
+    println(logger.io, "iter=$k  evals=$eval_count  f=$(@sprintf("%.6e", fx))  Δ=$(@sprintf("%.2e", Δ))  [$success_str]")
 end
 
 """
@@ -85,9 +85,20 @@ end
     log_final!(logger, result)
 
 Log final optimization result (Final level and above).
+Includes evaluations count and total time.
 """
 function log_final!(logger::MADSLogger, result::NamedTuple)
     should_log(logger, Final) || return
+
+    # Format time nicely
+    time_sec = haskey(result, :time) ? result.time : 0.0
+    if time_sec < 60
+        time_str = @sprintf("%.2f seconds", time_sec)
+    elseif time_sec < 3600
+        time_str = @sprintf("%.2f minutes", time_sec / 60)
+    else
+        time_str = @sprintf("%.2f hours", time_sec / 3600)
+    end
 
     println(logger.io, "")
     println(logger.io, "═══════════════════════════════════════════════════════")
@@ -95,6 +106,8 @@ function log_final!(logger::MADSLogger, result::NamedTuple)
     println(logger.io, "───────────────────────────────────────────────────────")
     println(logger.io, " Stopping reason : $(result.stopping_reason)")
     println(logger.io, " Iterations      : $(result.iterations)")
+    println(logger.io, " Evaluations     : $(result.evaluations)")
+    println(logger.io, " Total time      : $time_str")
     println(logger.io, " Best f(x)       : $(@sprintf("%.10e", result.f))")
     println(logger.io, " Best x          : $(result.x)")
     println(logger.io, "═══════════════════════════════════════════════════════")

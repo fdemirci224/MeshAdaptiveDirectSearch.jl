@@ -74,7 +74,7 @@ export Silent, Final, Iter, Step, Debug
 
 # Exports - Stopping reasons
 export StoppingReason
-export MaxIterations, MinMeshSize, MaxEvaluations, MaxTime, FTolReached, XTolReached
+export MaxIterations, MinMeshSize, MaxEvaluations, MaxTime, FTolReached, XTolReached, FTargetReached
 
 # Exports - Reduction strategies
 export NegReduction, NoReduction
