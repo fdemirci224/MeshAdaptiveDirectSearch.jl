@@ -49,16 +49,18 @@ Return mesh index (log-scale level).
 ℓ(m::Mesh) = round(Int, -log(m.τ, m.Δᵐ))
 
 """
-    LogMesh(; τ=4, Δᵐ=1)
+    LogMesh(; τ=4, Δᵐ=1, min_level=0)
 
 Efficient log-space mesh for w⁺ = -w⁻ = 1.
 Stores mesh level directly instead of computing logarithms.
+`min_level` controls the maximum mesh size accumulation (default 0 means cap at Δ=1).
 """
 mutable struct LogMesh
     τ::Int
     neglogΔᵐ::Int
+    min_level::Int
 end
-LogMesh(; τ=4, Δᵐ=1) = LogMesh(τ, Int(-log(τ, Δᵐ)))
+LogMesh(; τ=4, Δᵐ=1, min_level=0) = LogMesh(τ, Int(-log(τ, Δᵐ)), min_level)
 
 """
     update!(m::LogMesh, i)
@@ -68,7 +70,9 @@ Update log-mesh based on poll result.
 function update!(m::LogMesh, i)
     i == 0 && return m
     if i > 0
-        m.neglogΔᵐ -= 1
+        if m.neglogΔᵐ > m.min_level
+            m.neglogΔᵐ -= 1
+        end
     else
         m.neglogΔᵐ += 1
     end
